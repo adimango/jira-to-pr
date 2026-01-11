@@ -1,0 +1,69 @@
+{
+  "name": "jira-to-pr",
+  "version": "1.0.0",
+  "description": "Convert Jira tickets to GitHub PRs using AI",
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "jira-to-pr": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "dev": "tsx src/cli.ts",
+    "build": "tsc && chmod +x dist/cli.js",
+    "start": "node dist/cli.js",
+    "prepublishOnly": "npm run build",
+    "postinstall": "echo '\\n✨ jira-to-pr installed! Run: jira-to-pr init\\n'"
+  },
+  "keywords": [
+    "jira",
+    "github",
+    "pr",
+    "pull-request",
+    "ai",
+    "cli",
+    "automation",
+    "claude",
+    "openai",
+    "ollama",
+    "code-generation"
+  ],
+  "author": "Alex Di Mango",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/adimango/jira-to-pr.git"
+  },
+  "homepage": "https://github.com/adimango/jira-to-pr#readme",
+  "bugs": {
+    "url": "https://github.com/adimango/jira-to-pr/issues"
+  },
+  "packageManager": "pnpm@10.15.0",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.2",
+    "@modelcontextprotocol/sdk": "^1.25.2",
+    "@octokit/rest": "^22.0.1",
+    "chalk": "^5.6.2",
+    "commander": "^14.0.2",
+    "dotenv": "^17.2.3",
+    "globby": "^16.1.0",
+    "inquirer": "^13.1.0",
+    "openai": "^6.16.0",
+    "ora": "^9.0.0",
+    "simple-git": "^3.30.0",
+    "zod": "^4.3.5"
+  },
+  "devDependencies": {
+    "@types/inquirer": "^9.0.9",
+    "@types/node": "^25.0.5",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

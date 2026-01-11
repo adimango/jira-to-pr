@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+.env.*
+.jira-to-pr.json
+.DS_Store
+*.log
+*.tsbuildinfo
+pnpm-debug.log*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
