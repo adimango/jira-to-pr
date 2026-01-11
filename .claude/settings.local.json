@@ -6,7 +6,9 @@
       "Bash(pnpm build:*)",
       "Bash(node:*)",
       "Bash(npm run build:*)",
-      "Bash(npm pack:*)"
+      "Bash(npm pack:*)",
+      "Bash(npx tsc:*)",
+      "Bash(pnpm install:*)"
     ]
   }
 }

@@ -70,5 +70,9 @@ export interface WorkflowOptions {
   jql?: string;
   autoApprove: boolean;
   remote: boolean; // Use GitHub API only, no local git required
-  force: boolean; // Skip clean working tree check (useful with Claude Code/Codex)
+  explain: boolean; // Show AI reasoning after generating code
+  // Granular override flags
+  allowDirty: boolean; // Allow uncommitted changes in working tree
+  allowLargeDiff: boolean; // Allow diffs exceeding max limits
+  allowMissingTests: boolean; // Allow changes without test updates
 }

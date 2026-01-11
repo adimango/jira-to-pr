@@ -26,7 +26,10 @@ program
   .option('-y, --yes', 'Auto-approve changes without prompting', false)
   .option('-v, --verbose', 'Show detailed output', false)
   .option('-r, --remote', 'Use GitHub API only (no local git required)', false)
-  .option('-f, --force', 'Skip clean working tree check (useful with Claude Code/Codex)', false)
+  .option('-e, --explain', 'Show AI reasoning for the generated changes', false)
+  .option('--allow-dirty', 'Allow uncommitted changes in working tree', false)
+  .option('--allow-large-diff', 'Allow diffs exceeding safety limits', false)
+  .option('--allow-missing-tests', 'Suppress test coverage warnings', false)
   .action(async (ticketArg, options) => {
     try {
       const config = loadConfig();
@@ -51,7 +54,10 @@ program
         autoApprove: options.yes,
         verbose: options.verbose,
         remote: options.remote,
-        force: options.force,
+        explain: options.explain,
+        allowDirty: options.allowDirty,
+        allowLargeDiff: options.allowLargeDiff,
+        allowMissingTests: options.allowMissingTests,
       };
 
       const workflow = new Workflow(config);
@@ -175,7 +181,10 @@ program
   .option('-y, --yes', 'Auto-approve changes without prompting', false)
   .option('-v, --verbose', 'Show detailed output', false)
   .option('-r, --remote', 'Use GitHub API only (no local git required)', false)
-  .option('-f, --force', 'Skip clean working tree check (useful with Claude Code/Codex)', false)
+  .option('-e, --explain', 'Show AI reasoning for the generated changes', false)
+  .option('--allow-dirty', 'Allow uncommitted changes in working tree', false)
+  .option('--allow-large-diff', 'Allow diffs exceeding safety limits', false)
+  .option('--allow-missing-tests', 'Suppress test coverage warnings', false)
   .action(async (ticketArg, options) => {
     // If no ticket provided, show help
     if (!ticketArg) {
@@ -209,7 +218,10 @@ program
         autoApprove: options.yes,
         verbose: options.verbose,
         remote: options.remote,
-        force: options.force,
+        explain: options.explain,
+        allowDirty: options.allowDirty,
+        allowLargeDiff: options.allowLargeDiff,
+        allowMissingTests: options.allowMissingTests,
       };
 
       const workflow = new Workflow(config);

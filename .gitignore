@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 .env.*
+.jira-to-pr.env
 .jira-to-pr.json
 .DS_Store
 *.log

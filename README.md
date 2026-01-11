@@ -48,12 +48,34 @@ ANTHROPIC_API_KEY=your_key  # or OPENAI_API_KEY
 ```bash
 jira-to-pr PROJ-123           # Create PR from ticket
 jira-to-pr PROJ-123 --dry-run # Preview only
+jira-to-pr PROJ-123 --explain # Show AI reasoning
 jira-to-pr PROJ-123 --yes     # Skip confirmation
-jira-to-pr PROJ-123 --force   # Allow uncommitted changes
-jira-to-pr PROJ-123 --remote  # No local git needed
 
 jira-to-pr list               # List available tickets
 jira-to-pr config             # Show current config
+```
+
+### Interactive Mode
+
+After generating code, you'll see a menu:
+
+```
+? What would you like to do?
+❯ Apply changes and create PR
+  Explain - show AI reasoning
+  Retry - regenerate with feedback
+  Abort
+```
+
+Select "Retry" to give feedback and regenerate the code.
+
+### Override Flags
+
+```bash
+--allow-dirty         # Allow uncommitted changes in working tree
+--allow-large-diff    # Allow diffs exceeding safety limits
+--allow-missing-tests # Suppress test coverage warnings
+--remote              # Use GitHub API only (no local git)
 ```
 
 ## Claude Code Integration
@@ -92,10 +114,11 @@ These guide how code is generated to match your project conventions.
 
 ## Safety
 
-- Requires acceptance criteria by default
+- Requires acceptance criteria (with helpful examples if missing)
 - Limits files (10) and lines (500) changed
+- Warns if behavioral changes lack test updates
 - Shows diff preview before applying
-- Requires confirmation before creating PR
+- Interactive confirmation with explain/retry options
 
 Override limits in config:
 

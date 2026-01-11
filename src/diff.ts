@@ -238,7 +238,7 @@ export function displayDiffSummary(changes: FileChange[]): void {
   if (modified > 0) parts.push(chalk.yellow(`${modified} modified`));
   if (deleted > 0) parts.push(chalk.red(`${deleted} deleted`));
 
-  console.log(chalk.bold('\n📊 Change Summary: ') + parts.join(', '));
+  console.log(chalk.bold('\nChange Summary: ') + parts.join(', '));
 }
 
 /**

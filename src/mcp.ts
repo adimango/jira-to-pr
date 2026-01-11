@@ -114,10 +114,13 @@ export async function runMcpServer(): Promise<void> {
         await workflow.run({
           ticketKey,
           dryRun: dryRun ?? true,
-          autoApprove: !dryRun, // Auto-approve when not dry run
+          autoApprove: !dryRun,
           verbose: false,
           remote: false,
-          force: true, // Always force since we're in an AI context
+          explain: false,
+          allowDirty: true, // Allow in MCP context
+          allowLargeDiff: false,
+          allowMissingTests: true, // Don't warn in MCP context
         });
 
         return {

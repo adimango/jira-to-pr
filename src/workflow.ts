@@ -1,13 +1,21 @@
 import chalk from 'chalk';
 import ora, { type Ora } from 'ora';
 import inquirer from 'inquirer';
-import type { Config, JiraTicket, CodeGenerationResult, SafetyCheckResult, WorkflowOptions } from './types.js';
+import type {
+  Config,
+  JiraTicket,
+  CodeGenerationResult,
+  SafetyCheckResult,
+  WorkflowOptions,
+  FileChange,
+} from './types.js';
 import { JiraClient } from './jira.js';
 import { GitHubClient } from './github.js';
 import { AIClient } from './ai.js';
 import { ThinkingIndicator } from './ui.js';
 import { displayAllDiffs } from './diff.js';
 import { createFileOperations, type FileOperations } from './file-operations.js';
+import { validateTestCoverage } from './validation.js';
 
 export class Workflow {
   private jira: JiraClient;
@@ -31,40 +39,168 @@ export class Workflow {
       const ticket = await this.fetchAndValidateTicket(spinner, options);
 
       // Step 2: Check readiness
-      await this.checkReadiness(spinner, fileOps, options.remote, options.force);
+      await this.checkReadiness(spinner, fileOps, options);
 
       // Step 3: Gather repository context
-      const { files, relevantFileContents, projectInstructions, prTemplate } =
-        await this.gatherContext(spinner, fileOps, ticket, options);
+      const context = await this.gatherContext(spinner, fileOps, ticket, options);
 
-      // Step 4: Generate code
-      const result = await this.generateCode(
-        ticket,
-        { files, relevantFileContents, projectInstructions, prTemplate }
-      );
+      // Step 4: Generate code (with retry loop for interactive mode)
+      let result = await this.generateCode(ticket, context);
 
       // Step 5: Safety checks
-      this.validateSafety(spinner, result);
+      const safetyResult = this.runSafetyChecks(spinner, result, context.files, options);
+      if (!safetyResult.passed) {
+        return;
+      }
 
-      // Step 6: Display diff preview
+      // Step 6: Display diff preview and explanation
       await displayAllDiffs(result.changes, (path) => fileOps.readFile(path));
+      this.displayChangeList(result.changes);
       this.displayGitInfo(result);
 
-      // Step 7: Confirm or dry-run
+      if (options.explain) {
+        this.displayExplanation(result);
+      }
+
+      // Step 7: Dry-run exit
       if (options.dryRun) {
         console.log(chalk.yellow('\n[DRY RUN] No changes will be applied.'));
         return;
       }
 
-      if (!options.autoApprove && !(await this.confirmChanges())) {
-        console.log(chalk.yellow('Aborted by user.'));
-        return;
+      // Step 8: Interactive confirmation (or auto-approve)
+      if (options.autoApprove) {
+        // Skip interactive mode
+      } else {
+        const action = await this.promptInteractive(result);
+
+        if (action === 'abort') {
+          console.log(chalk.yellow('Aborted by user.'));
+          return;
+        }
+
+        if (action === 'explain') {
+          this.displayExplanation(result);
+          // After explaining, ask again
+          const confirmAfterExplain = await this.promptSimpleConfirm();
+          if (!confirmAfterExplain) {
+            console.log(chalk.yellow('Aborted by user.'));
+            return;
+          }
+        }
+
+        if (action === 'retry') {
+          const feedback = await this.promptRetryFeedback();
+          result = await this.regenerateWithFeedback(spinner, ticket, context, result, feedback);
+
+          // Show new diff
+          await displayAllDiffs(result.changes, (path) => fileOps.readFile(path));
+          this.displayGitInfo(result);
+
+          // Simple confirm after retry
+          const confirmAfterRetry = await this.promptSimpleConfirm();
+          if (!confirmAfterRetry) {
+            console.log(chalk.yellow('Aborted by user.'));
+            return;
+          }
+        }
+        // action === 'proceed' falls through to apply
       }
 
-      // Step 8: Apply changes and create PR
+      // Step 9: Apply changes and create PR
       await this.applyChangesAndCreatePR(spinner, fileOps, result);
     } catch (error) {
       spinner.fail('Workflow failed');
+      throw error;
+    }
+  }
+
+  // ==================== INTERACTIVE METHODS ====================
+
+  private async promptInteractive(_result: CodeGenerationResult): Promise<'proceed' | 'abort' | 'explain' | 'retry'> {
+    const { action } = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'action',
+        message: 'What would you like to do?',
+        choices: [
+          { name: 'Apply changes and create PR', value: 'proceed' },
+          { name: 'Explain - show AI reasoning', value: 'explain' },
+          { name: 'Retry - regenerate with feedback', value: 'retry' },
+          { name: 'Abort', value: 'abort' },
+        ],
+        default: 'proceed',
+      },
+    ]);
+    return action;
+  }
+
+  private async promptSimpleConfirm(): Promise<boolean> {
+    const { proceed } = await inquirer.prompt([
+      {
+        type: 'confirm',
+        name: 'proceed',
+        message: 'Apply these changes and create a PR?',
+        default: false,
+      },
+    ]);
+    return proceed;
+  }
+
+  private async promptRetryFeedback(): Promise<string> {
+    const { feedback } = await inquirer.prompt([
+      {
+        type: 'input',
+        name: 'feedback',
+        message: 'What should be different? (e.g., "use a different approach for X"):',
+      },
+    ]);
+    return feedback;
+  }
+
+  private displayExplanation(result: CodeGenerationResult): void {
+    console.log(chalk.bold('\nAI Reasoning:'));
+    console.log(chalk.cyan('─'.repeat(60)));
+    console.log(result.explanation);
+    console.log(chalk.cyan('─'.repeat(60)));
+    console.log();
+  }
+
+  private async regenerateWithFeedback(
+    _spinner: Ora,
+    ticket: JiraTicket,
+    context: {
+      files: string[];
+      relevantFileContents: Map<string, string>;
+      projectInstructions: { content: string; file: string } | null;
+      prTemplate: string | null;
+    },
+    previousResult: CodeGenerationResult,
+    feedback: string
+  ): Promise<CodeGenerationResult> {
+    const thinking = new ThinkingIndicator();
+    thinking.start('Regenerating with feedback');
+
+    const repoInfo = await this.github.getRepoInfo();
+
+    try {
+      const result = await this.ai.regenerateWithFeedback(
+        ticket,
+        {
+          files: context.files,
+          relevantFileContents: context.relevantFileContents,
+          language: repoInfo.language,
+          projectInstructions: context.projectInstructions,
+          prTemplate: context.prTemplate,
+        },
+        previousResult,
+        feedback,
+        (token) => thinking.onToken(token)
+      );
+      thinking.succeed('Code regenerated');
+      return result;
+    } catch (error) {
+      thinking.fail('Regeneration failed');
       throw error;
     }
   }
@@ -82,7 +218,7 @@ export class Workflow {
     if (this.config.safety.requireSingleTicket && tickets.length !== 1) {
       throw new Error(
         `Expected exactly 1 ticket, found ${tickets.length}. ` +
-          'Use --ticket-key to specify a single ticket or disable requireSingleTicket in config.'
+          'Use --ticket to specify a single ticket.'
       );
     }
 
@@ -90,28 +226,38 @@ export class Workflow {
     this.displayTicket(ticket);
 
     if (this.config.safety.requireAcceptanceCriteria && !ticket.acceptanceCriteria) {
-      throw new Error(
-        `Ticket ${ticket.key} has no acceptance criteria. ` +
-          'Please add acceptance criteria or disable requireAcceptanceCriteria in config.'
-      );
+      throw new Error(this.formatMissingACError(ticket.key));
     }
 
     return ticket;
   }
 
+  private formatMissingACError(ticketKey: string): string {
+    return `Ticket ${ticketKey} has no acceptance criteria.
+
+Acceptance criteria help the AI understand what "done" looks like.
+
+Example of good acceptance criteria:
+  - When user clicks "Submit", form data is saved to the database
+  - If email is invalid, show error message "Please enter a valid email"
+  - Loading spinner appears while request is in progress
+  - Success message appears after save completes
+
+Add acceptance criteria to the Jira ticket, then try again.`;
+  }
+
   private async checkReadiness(
     spinner: Ora,
     fileOps: FileOperations,
-    isRemote: boolean,
-    force: boolean
+    options: WorkflowOptions
   ): Promise<void> {
-    if (isRemote) {
+    if (options.remote) {
       console.log(chalk.dim('  Running in remote mode (no local git)'));
       return;
     }
 
-    if (force) {
-      console.log(chalk.dim('  Skipping clean working tree check (--force)'));
+    if (options.allowDirty) {
+      console.log(chalk.dim('  Skipping clean working tree check (--allow-dirty)'));
       return;
     }
 
@@ -119,7 +265,10 @@ export class Workflow {
     const { ready, message } = await fileOps.checkReady();
     if (!ready) {
       spinner.fail('Working tree is not clean');
-      throw new Error(message || 'Working tree is not clean');
+      throw new Error(
+        (message || 'Working tree is not clean') +
+          '\nCommit or stash changes first, or use --allow-dirty to proceed anyway.'
+      );
     }
     spinner.succeed('Working tree is clean');
   }
@@ -204,41 +353,110 @@ export class Workflow {
     }
   }
 
-  private validateSafety(spinner: Ora, result: CodeGenerationResult): void {
+  private runSafetyChecks(
+    spinner: Ora,
+    result: CodeGenerationResult,
+    allFiles: string[],
+    options: WorkflowOptions
+  ): SafetyCheckResult {
     spinner.start('Running safety checks...');
-    const safetyResult = this.runSafetyChecks(result);
 
-    if (!safetyResult.passed) {
+    const errors: string[] = [];
+    const warnings: string[] = [];
+
+    // Check number of files
+    if (result.changes.length > this.config.safety.maxFilesToChange) {
+      if (options.allowLargeDiff) {
+        warnings.push(
+          `File count (${result.changes.length}) exceeds limit - allowed by --allow-large-diff`
+        );
+      } else {
+        errors.push(
+          `Too many files: ${result.changes.length} > ${this.config.safety.maxFilesToChange}. ` +
+            'Use --allow-large-diff to override.'
+        );
+      }
+    }
+
+    // Check total lines changed
+    let totalLines = 0;
+    for (const change of result.changes) {
+      if (change.content) {
+        totalLines += change.content.split('\n').length;
+      }
+    }
+
+    if (totalLines > this.config.safety.maxLinesChanged) {
+      if (options.allowLargeDiff) {
+        warnings.push(
+          `Lines changed (${totalLines}) exceeds limit - allowed by --allow-large-diff`
+        );
+      } else {
+        errors.push(
+          `Too many lines: ${totalLines} > ${this.config.safety.maxLinesChanged}. ` +
+            'Use --allow-large-diff to override.'
+        );
+      }
+    }
+
+    // Path validation
+    const forbiddenFiles = ['.jira-to-pr.env', '.jira-to-pr.json'];
+    for (const change of result.changes) {
+      const fileName = change.path.split('/').pop() || change.path;
+      if (forbiddenFiles.includes(fileName)) {
+        errors.push(`Forbidden file cannot be committed: ${change.path}`);
+      }
+      if (change.path.includes('..')) {
+        errors.push(`Suspicious path: ${change.path}`);
+      }
+      if (change.path.startsWith('/')) {
+        errors.push(`Absolute path not allowed: ${change.path}`);
+      }
+      if (
+        change.path.match(/\.(env|key|pem|secret|credential)/i) ||
+        change.path.includes('password')
+      ) {
+        warnings.push(`Sensitive file: ${change.path}`);
+      }
+    }
+
+    // Test coverage (advisory only)
+    if (!options.allowMissingTests) {
+      const testWarnings = validateTestCoverage(result.changes, allFiles);
+      warnings.push(...testWarnings);
+    }
+
+    const passed = errors.length === 0;
+
+    if (passed) {
+      spinner.succeed('Safety checks passed');
+    } else {
       spinner.fail('Safety checks failed');
-      for (const error of safetyResult.errors) {
+      for (const error of errors) {
         console.log(chalk.red(`  ✗ ${error}`));
       }
-      throw new Error('Safety checks failed. Aborting.');
     }
-    spinner.succeed('Safety checks passed');
 
-    for (const warning of safetyResult.warnings) {
+    for (const warning of warnings) {
       console.log(chalk.yellow(`  ⚠ ${warning}`));
     }
+
+    return { passed, errors, warnings };
   }
 
   private displayGitInfo(result: CodeGenerationResult): void {
-    console.log(chalk.bold('\n🔀 Git Operations:'));
+    console.log(chalk.bold('\nGit Operations:'));
     console.log(chalk.dim(`   Branch: ${result.branchName}`));
     console.log(chalk.dim(`   Commit: ${result.commitMessage}`));
     console.log(chalk.dim(`   PR: ${result.prTitle}`));
   }
 
-  private async confirmChanges(): Promise<boolean> {
-    const { proceed } = await inquirer.prompt([
-      {
-        type: 'confirm',
-        name: 'proceed',
-        message: 'Do you want to apply these changes and create a PR?',
-        default: false,
-      },
-    ]);
-    return proceed;
+  private displayChangeList(changes: FileChange[]): void {
+    for (const change of changes) {
+      const icon = change.operation === 'create' ? '+' : change.operation === 'delete' ? '-' : '~';
+      const color = change.operation === 'create' ? chalk.green : change.operation === 'delete' ? chalk.red : chalk.yellow;
+      console.log(color(`   ${icon} ${change.path} (${change.operation})`));
+    }
   }
 
   private async applyChangesAndCreatePR(
@@ -266,7 +484,7 @@ export class Workflow {
     });
     spinner.succeed('Pull request created');
 
-    console.log(chalk.green(`\n✓ Successfully created PR #${pr.number}`));
+    console.log(chalk.green(`\n✓ Created PR #${pr.number}`));
     console.log(chalk.blue(`  ${pr.url}`));
   }
 
@@ -280,7 +498,7 @@ export class Workflow {
   }
 
   private displayTicket(ticket: JiraTicket): void {
-    console.log(chalk.bold(`\n📋 ${ticket.key}: ${ticket.summary}`));
+    console.log(chalk.bold(`\n${ticket.key}: ${ticket.summary}`));
     console.log(chalk.dim(`   Type: ${ticket.issueType} | Priority: ${ticket.priority} | Status: ${ticket.status}`));
 
     if (ticket.description) {
@@ -302,55 +520,5 @@ export class Workflow {
       }
     }
     console.log();
-  }
-
-  private runSafetyChecks(result: CodeGenerationResult): SafetyCheckResult {
-    const errors: string[] = [];
-    const warnings: string[] = [];
-
-    // Check number of files
-    if (result.changes.length > this.config.safety.maxFilesToChange) {
-      errors.push(
-        `Too many files changed: ${result.changes.length} > ${this.config.safety.maxFilesToChange}`
-      );
-    }
-
-    // Check total lines changed
-    let totalLines = 0;
-    for (const change of result.changes) {
-      if (change.content) {
-        totalLines += change.content.split('\n').length;
-      }
-    }
-
-    if (totalLines > this.config.safety.maxLinesChanged) {
-      errors.push(
-        `Too many lines changed: ${totalLines} > ${this.config.safety.maxLinesChanged}`
-      );
-    }
-
-    // Warn about certain patterns
-    for (const change of result.changes) {
-      if (change.path.includes('..')) {
-        errors.push(`Suspicious path: ${change.path}`);
-      }
-
-      if (change.path.startsWith('/')) {
-        errors.push(`Absolute path not allowed: ${change.path}`);
-      }
-
-      if (
-        change.path.match(/\.(env|key|pem|secret|credential)/i) ||
-        change.path.includes('password')
-      ) {
-        warnings.push(`Potentially sensitive file: ${change.path}`);
-      }
-    }
-
-    return {
-      passed: errors.length === 0,
-      errors,
-      warnings,
-    };
   }
 }

@@ -449,6 +449,43 @@ Respond with a JSON object as specified in the system prompt.`;
     }
   }
 
+  async regenerateWithFeedback(
+    ticket: JiraTicket,
+    repoContext: {
+      files: string[];
+      relevantFileContents: Map<string, string>;
+      language: string | null;
+      projectInstructions?: { content: string; file: string } | null;
+      prTemplate?: string | null;
+    },
+    previousResult: CodeGenerationResult,
+    feedback: string,
+    onToken?: (token: string) => void
+  ): Promise<CodeGenerationResult> {
+    const instructions = repoContext.projectInstructions ?? this.loadProjectInstructions();
+    const systemPrompt = this.buildSystemPrompt(repoContext, instructions?.content ?? null, repoContext.prTemplate ?? null);
+
+    const userPrompt = `${this.buildUserPrompt(ticket, repoContext)}
+
+## Previous Attempt
+
+The previous code generation produced these changes:
+${previousResult.changes.map(c => `- ${c.operation} ${c.path}`).join('\n')}
+
+Explanation: ${previousResult.explanation}
+
+## User Feedback
+
+The user wants the following changes:
+${feedback}
+
+Please regenerate the code taking this feedback into account.
+Respond with a JSON object as specified in the system prompt.`;
+
+    const text = await this.provider.generateText(systemPrompt, userPrompt, onToken);
+    return this.parseResponse(text, ticket);
+  }
+
   private slugify(text: string): string {
     return text
       .toLowerCase()

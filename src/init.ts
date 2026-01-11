@@ -116,7 +116,7 @@ async function promptJiraConfig(inquirer: any): Promise<InitAnswers['jira']> {
     {
       type: 'password',
       name: 'apiToken',
-      message: 'Jira API token (from id.atlassian.com):',
+      message: 'Jira API token (from id.atlassian.com/manage-profile/security/api-tokens):',
       mask: '*',
     },
     {
