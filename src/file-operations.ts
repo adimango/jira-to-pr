@@ -18,6 +18,15 @@ export interface FileOperations {
   /** Create a new branch */
   createBranch(branchName: string): Promise<void>;
 
+  /** Apply file changes locally without committing (for local review) */
+  applyChangesLocally(changes: FileChange[]): Promise<void>;
+
+  /** Discard local changes (restore original files) */
+  discardChanges(changes: FileChange[]): Promise<void>;
+
+  /** Commit and push changes (after local review) */
+  commitAndPush(branchName: string, commitMessage: string): Promise<void>;
+
   /** Apply file changes and commit */
   applyChangesAndCommit(
     branchName: string,
@@ -27,12 +36,17 @@ export interface FileOperations {
 
   /** Check if ready to make changes (e.g., clean working tree) */
   checkReady(): Promise<{ ready: boolean; message?: string }>;
+
+  /** Check if local mode is supported */
+  supportsLocalReview(): boolean;
 }
 
 /**
  * Local file operations using local git and filesystem
  */
 export class LocalFileOperations implements FileOperations {
+  private originalContents: Map<string, string | null> = new Map();
+
   constructor(private github: GitHubClient) {}
 
   async getFiles(): Promise<string[]> {
@@ -49,6 +63,45 @@ export class LocalFileOperations implements FileOperations {
 
   async createBranch(branchName: string): Promise<void> {
     return this.github.createBranch(branchName);
+  }
+
+  async applyChangesLocally(changes: FileChange[]): Promise<void> {
+    // Store original contents for potential discard
+    for (const change of changes) {
+      if (change.operation === 'create') {
+        this.originalContents.set(change.path, null); // File didn't exist
+      } else {
+        const content = await this.github.readLocalFile(change.path);
+        this.originalContents.set(change.path, content);
+      }
+    }
+    // Apply the changes without committing
+    await this.github.applyChanges(changes);
+  }
+
+  async discardChanges(changes: FileChange[]): Promise<void> {
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+
+    for (const change of changes) {
+      const filePath = path.resolve(process.cwd(), change.path);
+      const originalContent = this.originalContents.get(change.path);
+
+      if (originalContent === null) {
+        // File was created, delete it
+        await fs.unlink(filePath).catch(() => {});
+      } else if (originalContent !== undefined) {
+        // Restore original content
+        await fs.writeFile(filePath, originalContent, 'utf-8');
+      }
+    }
+    this.originalContents.clear();
+  }
+
+  async commitAndPush(branchName: string, commitMessage: string): Promise<void> {
+    await this.github.commitChanges(commitMessage);
+    await this.github.pushBranch(branchName);
+    this.originalContents.clear();
   }
 
   async applyChangesAndCommit(
@@ -70,6 +123,10 @@ export class LocalFileOperations implements FileOperations {
       };
     }
     return { ready: true };
+  }
+
+  supportsLocalReview(): boolean {
+    return true;
   }
 }
 
@@ -95,6 +152,18 @@ export class RemoteFileOperations implements FileOperations {
     return this.github.createBranchRemote(branchName);
   }
 
+  async applyChangesLocally(_changes: FileChange[]): Promise<void> {
+    throw new Error('Local review not supported in remote mode');
+  }
+
+  async discardChanges(_changes: FileChange[]): Promise<void> {
+    throw new Error('Discard not supported in remote mode');
+  }
+
+  async commitAndPush(_branchName: string, _commitMessage: string): Promise<void> {
+    throw new Error('commitAndPush not supported in remote mode - use applyChangesAndCommit');
+  }
+
   async applyChangesAndCommit(
     branchName: string,
     changes: FileChange[],
@@ -106,6 +175,10 @@ export class RemoteFileOperations implements FileOperations {
   async checkReady(): Promise<{ ready: boolean; message?: string }> {
     // Remote mode is always ready - no local state to check
     return { ready: true };
+  }
+
+  supportsLocalReview(): boolean {
+    return false;
   }
 }
 

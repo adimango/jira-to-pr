@@ -70,45 +70,107 @@ export class Workflow {
 
       // Step 8: Interactive confirmation (or auto-approve)
       if (options.autoApprove) {
-        // Skip interactive mode
-      } else {
-        const action = await this.promptInteractive(result);
+        // Skip interactive mode - apply directly
+        await this.applyChangesAndCreatePR(spinner, fileOps, result);
+        return;
+      }
 
-        if (action === 'abort') {
+      // For remote mode, use simpler flow (no local review)
+      if (!fileOps.supportsLocalReview()) {
+        const confirm = await this.promptSimpleConfirm();
+        if (!confirm) {
+          console.log(chalk.yellow('Aborted by user.'));
+          return;
+        }
+        await this.applyChangesAndCreatePR(spinner, fileOps, result);
+        return;
+      }
+
+      // Local mode: Two-stage interactive flow
+      let changesApplied = false;
+
+      // Pre-apply loop
+      while (true) {
+        const preAction = await this.promptPreApply();
+
+        if (preAction === 'abort') {
+          if (changesApplied) {
+            await fileOps.discardChanges(result.changes);
+            console.log(chalk.dim('Changes discarded.'));
+          }
           console.log(chalk.yellow('Aborted by user.'));
           return;
         }
 
-        if (action === 'explain') {
+        if (preAction === 'explain') {
           this.displayExplanation(result);
-          // After explaining, ask again
-          const confirmAfterExplain = await this.promptSimpleConfirm();
-          if (!confirmAfterExplain) {
-            console.log(chalk.yellow('Aborted by user.'));
-            return;
-          }
+          continue; // Show menu again
         }
 
-        if (action === 'retry') {
+        if (preAction === 'retry') {
+          if (changesApplied) {
+            await fileOps.discardChanges(result.changes);
+            changesApplied = false;
+          }
           const feedback = await this.promptRetryFeedback();
           result = await this.regenerateWithFeedback(spinner, ticket, context, result, feedback);
-
-          // Show new diff
           await displayAllDiffs(result.changes, (path) => fileOps.readFile(path));
+          this.displayChangeList(result.changes);
           this.displayGitInfo(result);
+          continue; // Show menu again
+        }
 
-          // Simple confirm after retry
-          const confirmAfterRetry = await this.promptSimpleConfirm();
-          if (!confirmAfterRetry) {
-            console.log(chalk.yellow('Aborted by user.'));
-            return;
+        if (preAction === 'direct') {
+          // Skip local review, create PR directly
+          await this.applyChangesAndCreatePR(spinner, fileOps, result);
+          return;
+        }
+
+        if (preAction === 'apply') {
+          // Apply changes locally
+          spinner.start('Applying changes locally...');
+          await fileOps.applyChangesLocally(result.changes);
+          spinner.succeed('Changes applied locally');
+          changesApplied = true;
+
+          this.displayLocalReviewInstructions();
+
+          // Post-apply loop
+          while (true) {
+            const postAction = await this.promptPostApply();
+
+            if (postAction === 'discard') {
+              spinner.start('Discarding changes...');
+              await fileOps.discardChanges(result.changes);
+              spinner.succeed('Changes discarded');
+              console.log(chalk.yellow('Aborted by user.'));
+              return;
+            }
+
+            if (postAction === 'retry') {
+              spinner.start('Discarding changes...');
+              await fileOps.discardChanges(result.changes);
+              spinner.succeed('Changes discarded');
+              changesApplied = false;
+              const feedback = await this.promptRetryFeedback();
+              result = await this.regenerateWithFeedback(spinner, ticket, context, result, feedback);
+              await displayAllDiffs(result.changes, (path) => fileOps.readFile(path));
+              this.displayChangeList(result.changes);
+              this.displayGitInfo(result);
+              break; // Go back to pre-apply menu
+            }
+
+            if (postAction === 'commit') {
+              // Update PR body with AI notice
+              result.prBody = this.addAIGeneratedNotice(result.prBody);
+
+              // Create branch, commit, push, and create PR
+              await this.createBranchCommitAndPR(spinner, fileOps, result);
+              return;
+            }
           }
         }
-        // action === 'proceed' falls through to apply
       }
-
-      // Step 9: Apply changes and create PR
-      await this.applyChangesAndCreatePR(spinner, fileOps, result);
     } catch (error) {
       spinner.fail('Workflow failed');
       throw error;
@@ -117,19 +179,37 @@ export class Workflow {
 
   // ==================== INTERACTIVE METHODS ====================
 
-  private async promptInteractive(_result: CodeGenerationResult): Promise<'proceed' | 'abort' | 'explain' | 'retry'> {
+  private async promptPreApply(): Promise<'apply' | 'direct' | 'abort' | 'explain' | 'retry'> {
     const { action } = await inquirer.prompt([
       {
         type: 'list',
         name: 'action',
         message: 'What would you like to do?',
         choices: [
-          { name: 'Apply changes and create PR', value: 'proceed' },
+          { name: 'Apply locally - review and test before committing', value: 'apply' },
+          { name: 'Create PR directly - skip local review', value: 'direct' },
           { name: 'Explain - show AI reasoning', value: 'explain' },
           { name: 'Retry - regenerate with feedback', value: 'retry' },
           { name: 'Abort', value: 'abort' },
         ],
-        default: 'proceed',
+        default: 'apply',
+      },
+    ]);
+    return action;
+  }
+
+  private async promptPostApply(): Promise<'commit' | 'discard' | 'retry'> {
+    const { action } = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'action',
+        message: 'What would you like to do?',
+        choices: [
+          { name: 'Commit & Create PR', value: 'commit' },
+          { name: 'Discard changes - restore original files', value: 'discard' },
+          { name: 'Retry - discard and regenerate with feedback', value: 'retry' },
+        ],
+        default: 'commit',
       },
     ]);
     return action;
@@ -164,6 +244,23 @@ export class Workflow {
     console.log(result.explanation);
     console.log(chalk.cyan('─'.repeat(60)));
     console.log();
+  }
+
+  private displayLocalReviewInstructions(): void {
+    console.log(chalk.green('\n✓ Changes applied locally'));
+    console.log(chalk.cyan('─'.repeat(60)));
+    console.log(chalk.bold('You can now:'));
+    console.log('  • Run your test suite');
+    console.log('  • Start the application locally');
+    console.log('  • Review the changes in your editor');
+    console.log('  • Make manual adjustments if needed');
+    console.log(chalk.cyan('─'.repeat(60)));
+    console.log(chalk.dim('When you\'re done reviewing, select an option below.\n'));
+  }
+
+  private addAIGeneratedNotice(prBody: string): string {
+    const notice = '\n\n---\n🤖 *AI-generated code - please review carefully*';
+    return prBody + notice;
   }
 
   private async regenerateWithFeedback(
@@ -464,6 +561,9 @@ Add acceptance criteria to the Jira ticket, then try again.`;
     fileOps: FileOperations,
     result: CodeGenerationResult
   ): Promise<void> {
+    // Add AI notice to PR body
+    const prBody = this.addAIGeneratedNotice(result.prBody);
+
     spinner.start('Creating branch...');
     await fileOps.createBranch(result.branchName);
     spinner.succeed(`Created branch: ${result.branchName}`);
@@ -474,6 +574,32 @@ Add acceptance criteria to the Jira ticket, then try again.`;
       result.changes,
       result.commitMessage
     );
+    spinner.succeed(`Committed ${result.changes.length} file changes`);
+
+    spinner.start('Creating pull request...');
+    const pr = await this.github.createPullRequest({
+      title: result.prTitle,
+      body: prBody,
+      head: result.branchName,
+    });
+    spinner.succeed('Pull request created');
+
+    console.log(chalk.green(`\n✓ Created PR #${pr.number}`));
+    console.log(chalk.blue(`  ${pr.url}`));
+  }
+
+  private async createBranchCommitAndPR(
+    spinner: Ora,
+    fileOps: FileOperations,
+    result: CodeGenerationResult
+  ): Promise<void> {
+    // Changes are already applied locally, just need to commit
+    spinner.start('Creating branch...');
+    await fileOps.createBranch(result.branchName);
+    spinner.succeed(`Created branch: ${result.branchName}`);
+
+    spinner.start('Committing and pushing changes...');
+    await fileOps.commitAndPush(result.branchName, result.commitMessage);
     spinner.succeed(`Committed ${result.changes.length} file changes`);
 
     spinner.start('Creating pull request...');

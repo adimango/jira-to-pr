@@ -13,7 +13,7 @@ cd ~/your-project
 
 jira-to-pr init              # Interactive setup
 jira-to-pr PROJ-123 --dry-run # Preview changes
-jira-to-pr PROJ-123          # Create PR
+jira-to-pr PROJ-123          # Apply locally, test, then create PR
 ```
 
 ## Configuration
@@ -46,10 +46,10 @@ ANTHROPIC_API_KEY=your_key  # or OPENAI_API_KEY
 ## Usage
 
 ```bash
-jira-to-pr PROJ-123           # Create PR from ticket
-jira-to-pr PROJ-123 --dry-run # Preview only
-jira-to-pr PROJ-123 --explain # Show AI reasoning
-jira-to-pr PROJ-123 --yes     # Skip confirmation
+jira-to-pr PROJ-123           # Apply locally, review, then create PR
+jira-to-pr PROJ-123 --dry-run # Preview only (no changes applied)
+jira-to-pr PROJ-123 --explain # Show AI reasoning upfront
+jira-to-pr PROJ-123 --yes     # Skip review, apply directly
 
 jira-to-pr list               # List available tickets
 jira-to-pr config             # Show current config
@@ -61,13 +61,39 @@ After generating code, you'll see a menu:
 
 ```
 ? What would you like to do?
-❯ Apply changes and create PR
+❯ Apply locally - review and test before committing
+  Create PR directly - skip local review
   Explain - show AI reasoning
   Retry - regenerate with feedback
   Abort
 ```
 
-Select "Retry" to give feedback and regenerate the code.
+**Two-stage review flow** (recommended):
+
+1. **Apply locally** - Changes are written to your working directory
+2. **Review & test** - Run tests, start the app, make manual tweaks if needed
+3. **Commit** - When ready, select "Commit & Create PR"
+
+Or select **Create PR directly** to skip local review if you trust the diff.
+
+```
+✓ Changes applied locally
+────────────────────────────────────────────────────────────
+You can now:
+  • Run your test suite
+  • Start the application locally
+  • Review the changes in your editor
+  • Make manual adjustments if needed
+────────────────────────────────────────────────────────────
+
+? What would you like to do?
+❯ Commit & Create PR
+  Discard changes - restore original files
+  Retry - discard and regenerate with feedback
+```
+
+**AI-generated notice:** PRs include a footer noting the changes were AI-generated:
+- `🤖 AI-generated code - please review carefully`
 
 ### Override Flags
 
@@ -118,7 +144,8 @@ These guide how code is generated to match your project conventions.
 - Limits files (10) and lines (500) changed
 - Warns if behavioral changes lack test updates
 - Shows diff preview before applying
-- Interactive confirmation with explain/retry options
+- Two-stage review: apply locally, test, then commit
+- PRs marked as AI-generated for reviewer awareness
 
 Override limits in config:
 
