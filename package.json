@@ -1,6 +1,6 @@
 {
   "name": "jira-to-pr",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Convert Jira tickets to GitHub PRs using AI",
   "type": "module",
   "main": "./dist/index.js",
