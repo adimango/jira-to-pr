@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import ora, { type Ora } from 'ora';
-import inquirer from 'inquirer';
+import { select, confirm, input } from '@inquirer/prompts';
 import type {
   Config,
   JiraTicket,
@@ -71,7 +71,7 @@ export class Workflow {
       // Step 8: Interactive confirmation (or auto-approve)
       if (options.autoApprove) {
         // Skip interactive mode - apply directly
-        await this.applyChangesAndCreatePR(spinner, fileOps, result);
+        await this.applyChangesAndCreatePR(spinner, fileOps, result, false);
         return;
       }
 
@@ -82,7 +82,7 @@ export class Workflow {
           console.log(chalk.yellow('Aborted by user.'));
           return;
         }
-        await this.applyChangesAndCreatePR(spinner, fileOps, result);
+        await this.applyChangesAndCreatePR(spinner, fileOps, result, false);
         return;
       }
 
@@ -122,7 +122,7 @@ export class Workflow {
 
         if (preAction === 'direct') {
           // Skip local review, create PR directly
-          await this.applyChangesAndCreatePR(spinner, fileOps, result);
+          await this.applyChangesAndCreatePR(spinner, fileOps, result, false);
           return;
         }
 
@@ -161,11 +161,17 @@ export class Workflow {
             }
 
             if (postAction === 'commit') {
+              // Check if developer made manual modifications
+              const wasModified = await this.checkForManualModifications(
+                result.changes,
+                (path) => fileOps.readFile(path)
+              );
+
               // Update PR body with AI notice
-              result.prBody = this.addAIGeneratedNotice(result.prBody);
+              result.prBody = this.addAIGeneratedNotice(result.prBody, wasModified);
 
               // Create branch, commit, push, and create PR
-              await this.createBranchCommitAndPR(spinner, fileOps, result);
+              await this.createBranchCommitAndPR(spinner, fileOps, result, wasModified);
               return;
             }
           }
@@ -180,61 +186,45 @@ export class Workflow {
   // ==================== INTERACTIVE METHODS ====================
 
   private async promptPreApply(): Promise<'apply' | 'direct' | 'abort' | 'explain' | 'retry'> {
-    const { action } = await inquirer.prompt([
-      {
-        type: 'list',
-        name: 'action',
-        message: 'What would you like to do?',
-        choices: [
-          { name: 'Apply locally - review and test before committing', value: 'apply' },
-          { name: 'Create PR directly - skip local review', value: 'direct' },
-          { name: 'Explain - show AI reasoning', value: 'explain' },
-          { name: 'Retry - regenerate with feedback', value: 'retry' },
-          { name: 'Abort', value: 'abort' },
-        ],
-        default: 'apply',
-      },
-    ]);
+    const action = await select({
+      message: 'What would you like to do?',
+      choices: [
+        { name: 'Apply locally - review and test before committing', value: 'apply' as const },
+        { name: 'Create PR directly - skip local review', value: 'direct' as const },
+        { name: 'Explain - show AI reasoning', value: 'explain' as const },
+        { name: 'Retry - regenerate with feedback', value: 'retry' as const },
+        { name: 'Abort', value: 'abort' as const },
+      ],
+      default: 'apply',
+    });
     return action;
   }
 
   private async promptPostApply(): Promise<'commit' | 'discard' | 'retry'> {
-    const { action } = await inquirer.prompt([
-      {
-        type: 'list',
-        name: 'action',
-        message: 'What would you like to do?',
-        choices: [
-          { name: 'Commit & Create PR', value: 'commit' },
-          { name: 'Discard changes - restore original files', value: 'discard' },
-          { name: 'Retry - discard and regenerate with feedback', value: 'retry' },
-        ],
-        default: 'commit',
-      },
-    ]);
+    const action = await select({
+      message: 'What would you like to do?',
+      choices: [
+        { name: 'Commit & Create PR', value: 'commit' as const },
+        { name: 'Discard changes - restore original files', value: 'discard' as const },
+        { name: 'Retry - discard and regenerate with feedback', value: 'retry' as const },
+      ],
+      default: 'commit',
+    });
     return action;
   }
 
   private async promptSimpleConfirm(): Promise<boolean> {
-    const { proceed } = await inquirer.prompt([
-      {
-        type: 'confirm',
-        name: 'proceed',
-        message: 'Apply these changes and create a PR?',
-        default: false,
-      },
-    ]);
+    const proceed = await confirm({
+      message: 'Apply these changes and create a PR?',
+      default: false,
+    });
     return proceed;
   }
 
   private async promptRetryFeedback(): Promise<string> {
-    const { feedback } = await inquirer.prompt([
-      {
-        type: 'input',
-        name: 'feedback',
-        message: 'What should be different? (e.g., "use a different approach for X"):',
-      },
-    ]);
+    const feedback = await input({
+      message: 'What should be different? (e.g., "use a different approach for X"):',
+    });
     return feedback;
   }
 
@@ -258,7 +248,23 @@ export class Workflow {
     console.log(chalk.dim('When you\'re done reviewing, select an option below.\n'));
   }
 
-  private addAIGeneratedNotice(prBody: string): string {
+  private async checkForManualModifications(
+    changes: FileChange[],
+    readFile: (path: string) => Promise<string | null>
+  ): Promise<boolean> {
+    for (const change of changes) {
+      if (change.operation === 'delete') {
+        continue; // Can't modify a deleted file
+      }
+      const currentContent = await readFile(change.path);
+      if (currentContent !== change.content) {
+        return true; // File was modified
+      }
+    }
+    return false;
+  }
+
+  private addAIGeneratedNotice(prBody: string, _wasModified: boolean): string {
     const notice = '\n\n---\n🤖 *AI-generated code - please review carefully*';
     return prBody + notice;
   }
@@ -351,6 +357,12 @@ Add acceptance criteria to the Jira ticket, then try again.`;
     if (options.remote) {
       console.log(chalk.dim('  Running in remote mode (no local git)'));
       return;
+    }
+
+    // Ensure config files are in .gitignore before any git operations
+    const addedToGitignore = await this.github.ensureConfigInGitignore();
+    if (addedToGitignore.length > 0) {
+      console.log(chalk.dim(`  Added to .gitignore: ${addedToGitignore.join(', ')}`));
     }
 
     if (options.allowDirty) {
@@ -559,10 +571,11 @@ Add acceptance criteria to the Jira ticket, then try again.`;
   private async applyChangesAndCreatePR(
     spinner: Ora,
     fileOps: FileOperations,
-    result: CodeGenerationResult
+    result: CodeGenerationResult,
+    wasModified: boolean
   ): Promise<void> {
     // Add AI notice to PR body
-    const prBody = this.addAIGeneratedNotice(result.prBody);
+    const prBody = this.addAIGeneratedNotice(result.prBody, wasModified);
 
     spinner.start('Creating branch...');
     await fileOps.createBranch(result.branchName);
@@ -591,7 +604,8 @@ Add acceptance criteria to the Jira ticket, then try again.`;
   private async createBranchCommitAndPR(
     spinner: Ora,
     fileOps: FileOperations,
-    result: CodeGenerationResult
+    result: CodeGenerationResult,
+    wasModified: boolean
   ): Promise<void> {
     // Changes are already applied locally, just need to commit
     spinner.start('Creating branch...');
@@ -609,6 +623,10 @@ Add acceptance criteria to the Jira ticket, then try again.`;
       head: result.branchName,
     });
     spinner.succeed('Pull request created');
+
+    if (wasModified) {
+      console.log(chalk.cyan('\n📝 Manual modifications detected - noted in PR'));
+    }
 
     console.log(chalk.green(`\n✓ Created PR #${pr.number}`));
     console.log(chalk.blue(`  ${pr.url}`));

@@ -71,6 +71,45 @@ export class GitHubClient {
     }
   }
 
+  async ensureConfigInGitignore(): Promise<string[]> {
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+
+    const gitignorePath = path.resolve(process.cwd(), '.gitignore');
+    const filesToIgnore = ['.jira-to-pr.env', '.jira-to-pr.json'];
+    const added: string[] = [];
+
+    try {
+      // Check if .gitignore exists
+      let content = '';
+      try {
+        content = await fs.readFile(gitignorePath, 'utf-8');
+      } catch {
+        // .gitignore doesn't exist, create it
+      }
+
+      const lines = content.split('\n').map(line => line.trim());
+
+      // Add missing files to .gitignore
+      for (const file of filesToIgnore) {
+        if (!lines.includes(file)) {
+          content = content.endsWith('\n') || content === ''
+            ? content + file + '\n'
+            : content + '\n' + file + '\n';
+          added.push(file);
+        }
+      }
+
+      if (added.length > 0) {
+        await fs.writeFile(gitignorePath, content, 'utf-8');
+      }
+
+      return added;
+    } catch {
+      return [];
+    }
+  }
+
   async commitChanges(message: string): Promise<void> {
     await this.git.add('.');
     await this.git.commit(message);

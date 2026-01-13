@@ -1,6 +1,6 @@
 {
   "name": "jira-to-pr",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Convert Jira tickets to GitHub PRs using AI",
   "type": "module",
   "main": "./dist/index.js",
@@ -48,6 +48,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",
+    "@inquirer/prompts": "^7.4.2",
     "@modelcontextprotocol/sdk": "^1.25.2",
     "@octokit/rest": "^22.0.1",
     "chalk": "^5.6.2",

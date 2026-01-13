@@ -92,8 +92,8 @@ You can now:
   Retry - discard and regenerate with feedback
 ```
 
-**AI-generated notice:** PRs include a footer noting the changes were AI-generated:
-- `🤖 AI-generated code - please review carefully`
+**AI-generated notice:** PRs include a footer for reviewer awareness:
+`🤖 AI-generated code - please review carefully`
 
 ### Override Flags
 
